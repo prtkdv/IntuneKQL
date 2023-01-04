@@ -1,3 +1,4 @@
+
 //Compliance Failures by Failure Reason
 let ComplianceLogs=
 IntuneOperationalLogs 
@@ -17,7 +18,12 @@ ComplianceLogs
 | extend myJson=todynamic(Properties)
 | project-away Properties
 | extend Description=tostring(myJson["Description"])
-| extend Description=tostring(extract("(.*?)_IID_.*", 1, tostring(Description)))
-| extend Reason = tostring(extract("(.*?)\\.(.*)", 2, tostring(Description)))
-| summarize FailureCount=count() by Reason 
-| sort by FailureCount desc
+| extend AlertType=tostring(myJson["AlertType"])
+| extend DeviceOperatingSystem=tostring(myJson["DeviceOperatingSystem"])
+//| extend Description=tostring(extract("(.*?)_IID_.*", 1, tostring(Description)))
+| extend Description=tostring(extract("(.*?)\\_.*", 1, tostring(Description)))
+//| extend Reason = tostring(extract("(.*?)\\.(.*)", 2, tostring(Description)))
+ | extend Reason = tostring(extract("(.*?)\\.(.*)", 2, tostring(Description)))
+ | where Description != ""
+ | where DeviceOperatingSystem contains "Windows"
+ |summarize FailureCount=count() by Description 
