@@ -1,4 +1,4 @@
 IntuneDeviceComplianceOrg
-| where OSDescription == 'Windows'
-| project TimeGenerated, DeviceName, UPN, ComplianceState, LastContact, SerialNumber
+| where ComplianceState <> "Not Compliant" and isnotempty(ComplianceState) and OSDescription == 'Windows'
+| project TimeGenerated , ComplianceState , DeviceName ,  OS , UserName , UserEmail 
 | summarize count() by ComplianceState
