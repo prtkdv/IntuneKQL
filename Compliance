@@ -1,4 +1,8 @@
+https://github.com/rod-trent/MustLearnKQL
+Book_Version/MustLearnKQL_Book.pdf 
+
 IntuneDeviceComplianceOrg
 | where ComplianceState <> "Not Compliant" and isnotempty(ComplianceState) and OSDescription == 'Windows'
+| order by DeviceName asc
 | project TimeGenerated , ComplianceState , DeviceName ,  OS , UserName , UserEmail 
 | summarize count() by ComplianceState
