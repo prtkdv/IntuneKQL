@@ -1,0 +1,4 @@
+IntuneDeviceComplianceOrg
+| where OSDescription == 'Windows'
+| project TimeGenerated, DeviceName, UPN, ComplianceState, LastContact, SerialNumber
+| summarize count() by ComplianceState
