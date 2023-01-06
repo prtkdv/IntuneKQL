@@ -6,3 +6,64 @@ IntuneDeviceComplianceOrg
 | order by DeviceName asc
 | project TimeGenerated , ComplianceState , DeviceName ,  OS , UserName , UserEmail 
 | summarize count() by ComplianceState
+
+
+//JS 
+// Visualize device compliance (compliant, non-compliant, managed by Config Manager, not evaluated or in grace period) per week over time
+IntuneDevices
+| where OS == "Windows"
+| where ManagedBy == "Co-managed"
+//| where TimeGenerated > ago (30d)
+| summarize arg_max(DeviceName, *) by DeviceName
+| where isnotempty(CompliantState)
+| where CompliantState contains "Compliant"
+| summarize ComplianceCount=count()by CompliantState
+| render piechart 
+    with (title="Device compliance")
+    
+    
+    //Compliance Failures by Failure Reason
+let ComplianceLogs=
+IntuneOperationalLogs 
+| where OperationName == "Compliance" 
+| project TimeGenerated, Properties;
+ComplianceLogs
+| sort by TimeGenerated desc
+| join (
+ComplianceLogs
+| extend myJson = todynamic(Properties)
+| project-away Properties
+| extend IntuneDeviceId=tostring(myJson["IntuneDeviceId"]) 
+| project TimeGenerated, IntuneDeviceId
+| summarize TimeGenerated=max(TimeGenerated) by IntuneDeviceId    
+) on TimeGenerated
+| project-away TimeGenerated1, IntuneDeviceId  
+| extend myJson=todynamic(Properties)
+| project-away Properties
+| extend Description=tostring(myJson["Description"])
+| extend AlertType=tostring(myJson["AlertType"])
+| extend DeviceOperatingSystem=tostring(myJson["DeviceOperatingSystem"])
+//| extend Description=tostring(extract("(.*?)_IID_.*", 1, tostring(Description)))
+| extend Description=tostring(extract("(.*?)\\_.*", 1, tostring(Description)))
+//| extend Reason = tostring(extract("(.*?)\\.(.*)", 2, tostring(Description)))
+// | extend Reason = tostring(extract("(.*?)\\.(.*)", 2, tostring(Description)))
+ | where Description != ""
+ | where DeviceOperatingSystem contains "Windows"
+ |summarize FailureCount=count() by Description 
+
+//Visualize device compliance (compliant, non-compliant, managed by Config Manager, not evaluated or in grace period) per week over time
+
+//Data connector required for this query - Intune data sent to Sentinel workspace
+
+IntuneDevices
+| where OS == "Windows"
+| where ManagedBy == "Co-managed"
+| where TimeGenerated > ago (180d)
+| summarize arg_max(DeviceName, *) by DeviceName, startofweek(TimeGenerated)
+| where isnotempty(CompliantState)
+| summarize ComplianceCount=count()by CompliantState, startofweek(TimeGenerated)
+| render timechart
+    with (
+    ytitle="Device Count",
+    xtitle="Week",
+    title="Intune Windows Co-managed Device compliance per week over time")
