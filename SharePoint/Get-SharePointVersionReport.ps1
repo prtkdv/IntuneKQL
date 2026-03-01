@@ -2,10 +2,23 @@
 # Get-SharePointVersionReport.ps1
 # Description : Analyses all SharePoint Online sites and reports on files,
 #               version counts, and total size consumed by versions.
-# Requirements: PnP.PowerShell module
+# Requirements: PnP.PowerShell module  (v2+)
 #               Install-Module PnP.PowerShell -Force
-# Usage       : .\Get-SharePointVersionReport.ps1 -TenantName "contoso"
-#               [-OutputPath "C:\Reports"] [-AdminUrl "https://tenant-admin.sharepoint.com"]
+#
+# Authentication (choose one):
+#   Option A – PnP Management Shell app (no app registration needed, one-time
+#              admin consent required):
+#               Register-PnPManagementShellAccess   # run once as Global Admin
+#              Then run this script without -ClientId (uses the default below).
+#
+#   Option B – Your own Entra ID App Registration:
+#               Pass -ClientId "<your-app-client-id>"
+#               The app needs Sites.FullControl.All (application) + admin consent,
+#               or Sites.Read.All delegated + SharePoint admin rights for the user.
+#
+# Usage:
+#   .\Get-SharePointVersionReport.ps1 -TenantName "contoso"
+#   .\Get-SharePointVersionReport.ps1 -TenantName "contoso" -ClientId "<guid>" -OutputPath "C:\Reports"
 # =============================================================================
 
 [CmdletBinding()]
@@ -15,6 +28,11 @@ param (
 
     [Parameter(Mandatory = $false)]
     [string]$AdminUrl,
+
+    # PnP Management Shell multi-tenant app (public, no custom app needed).
+    # Override with your own app registration Client ID if preferred.
+    [Parameter(Mandatory = $false)]
+    [string]$ClientId = "31359c7f-bd7e-475c-86db-fdb8c937548e",
 
     [Parameter(Mandatory = $false)]
     [string]$OutputPath = ".",
@@ -51,6 +69,14 @@ function Format-Bytes {
 }
 
 # ---------------------------------------------------------------------------
+# Helper – connect to a SharePoint URL with interactive browser login
+# ---------------------------------------------------------------------------
+function Connect-SPOSite {
+    param ([string]$Url)
+    Connect-PnPOnline -Url $Url -ClientId $ClientId -Interactive
+}
+
+# ---------------------------------------------------------------------------
 # Connect to the SharePoint Admin centre
 # ---------------------------------------------------------------------------
 if (-not $AdminUrl) {
@@ -58,7 +84,9 @@ if (-not $AdminUrl) {
 }
 
 Write-Host "`n[$(Get-Date -Format 'HH:mm:ss')] Connecting to SharePoint Admin: $AdminUrl" -ForegroundColor Cyan
-Connect-PnPOnline -Url $AdminUrl -Interactive
+Write-Host "  ClientId: $ClientId" -ForegroundColor DarkGray
+Write-Host "  (If this is your first run, a browser window will open for sign-in.)`n" -ForegroundColor DarkGray
+Connect-SPOSite -Url $AdminUrl
 
 # ---------------------------------------------------------------------------
 # Retrieve all site collections
@@ -80,9 +108,9 @@ Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Found $($allSites.Count) active sit
 $report        = [System.Collections.Generic.List[PSObject]]::new()
 $siteSummary   = [System.Collections.Generic.List[PSObject]]::new()
 $grandTotal    = [PSCustomObject]@{
-    TotalFiles       = 0
-    TotalVersions    = 0
-    TotalVersionBytes= [long]0
+    TotalFiles        = 0
+    TotalVersions     = 0
+    TotalVersionBytes = [long]0
 }
 
 $siteIndex = 0
@@ -92,7 +120,7 @@ foreach ($site in $allSites) {
     Write-Host "`n[$siteIndex/$($allSites.Count)] Processing: $siteUrl" -ForegroundColor Yellow
 
     try {
-        Connect-PnPOnline -Url $siteUrl -Interactive
+        Connect-SPOSite -Url $siteUrl
 
         $lists = Get-PnPList | Where-Object {
             $_.BaseTemplate -eq 101 -and   # Document Library
@@ -106,27 +134,21 @@ foreach ($site in $allSites) {
         foreach ($list in $lists) {
             Write-Host "  Library: $($list.Title)" -ForegroundColor Gray
 
-            # Get all files (ListItems with FileSystemObjectType = File)
             $camlQuery = "<View Scope='RecursiveAll'><Query><Where><Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>0</Value></Eq></Where></Query><RowLimit>5000</RowLimit></View>"
-
             $items = Get-PnPListItem -List $list -Query $camlQuery -PageSize 500
 
             foreach ($item in $items) {
                 try {
                     $file = Get-PnPProperty -ClientObject $item -Property File
-                    if ($null -eq $file -or $file.ServerRelativeUrl -eq $null) { continue }
+                    if ($null -eq $file -or $null -eq $file.ServerRelativeUrl) { continue }
 
-                    # Retrieve version history
-                    $versions = Get-PnPProperty -ClientObject $file -Property Versions
+                    $versions     = Get-PnPProperty -ClientObject $file -Property Versions
                     $versionCount = $versions.Count
 
                     if ($versionCount -lt $MinVersionCount) { continue }
 
-                    # Calculate total bytes used by all versions
                     $versionBytes = [long]0
-                    foreach ($ver in $versions) {
-                        $versionBytes += [long]$ver.Size
-                    }
+                    foreach ($ver in $versions) { $versionBytes += [long]$ver.Size }
 
                     $versionMB = [math]::Round($versionBytes / 1MB, 4)
                     if ($versionMB -lt $MinVersionSizeMB) { continue }
@@ -135,20 +157,19 @@ foreach ($site in $allSites) {
                     $siteVersionCount += $versionCount
                     $siteVersionBytes += $versionBytes
 
-                    $reportRow = [PSCustomObject]@{
-                        SiteUrl         = $siteUrl
-                        Library         = $list.Title
-                        FilePath        = $file.ServerRelativeUrl
-                        FileName        = $file.Name
-                        CurrentVersion  = $file.UIVersionLabel
-                        VersionCount    = $versionCount
-                        VersionSizeBytes= $versionBytes
-                        VersionSizeMB   = $versionMB
-                        VersionSizeHR   = Format-Bytes $versionBytes
-                        LastModified    = $item["Modified"]
-                        ModifiedBy      = $item["Editor"].LookupValue
-                    }
-                    $report.Add($reportRow)
+                    $report.Add([PSCustomObject]@{
+                        SiteUrl          = $siteUrl
+                        Library          = $list.Title
+                        FilePath         = $file.ServerRelativeUrl
+                        FileName         = $file.Name
+                        CurrentVersion   = $file.UIVersionLabel
+                        VersionCount     = $versionCount
+                        VersionSizeBytes = $versionBytes
+                        VersionSizeMB    = $versionMB
+                        VersionSizeHR    = Format-Bytes $versionBytes
+                        LastModified     = $item["Modified"]
+                        ModifiedBy       = $item["Editor"].LookupValue
+                    })
                 }
                 catch {
                     Write-Warning "    Could not process item '$($item.Id)' in '$($list.Title)': $_"
@@ -161,13 +182,13 @@ foreach ($site in $allSites) {
         $grandTotal.TotalVersionBytes += $siteVersionBytes
 
         $siteSummary.Add([PSCustomObject]@{
-            SiteUrl          = $siteUrl
-            LibraryCount     = $lists.Count
-            FileCount        = $siteFileCount
-            TotalVersions    = $siteVersionCount
-            TotalVersionBytes= $siteVersionBytes
-            TotalVersionSizeMB = [math]::Round($siteVersionBytes / 1MB, 2)
-            TotalVersionSizeHR = Format-Bytes $siteVersionBytes
+            SiteUrl             = $siteUrl
+            LibraryCount        = $lists.Count
+            FileCount           = $siteFileCount
+            TotalVersions       = $siteVersionCount
+            TotalVersionBytes   = $siteVersionBytes
+            TotalVersionSizeMB  = [math]::Round($siteVersionBytes / 1MB, 2)
+            TotalVersionSizeHR  = Format-Bytes $siteVersionBytes
         })
 
         Write-Host "  -> Files: $siteFileCount  |  Versions: $siteVersionCount  |  Version Storage: $(Format-Bytes $siteVersionBytes)" -ForegroundColor Green
@@ -175,11 +196,11 @@ foreach ($site in $allSites) {
     catch {
         Write-Warning "Failed to process site '$siteUrl': $_"
         $siteSummary.Add([PSCustomObject]@{
-            SiteUrl          = $siteUrl
-            LibraryCount     = 0
-            FileCount        = 0
-            TotalVersions    = 0
-            TotalVersionBytes= 0
+            SiteUrl            = $siteUrl
+            LibraryCount       = 0
+            FileCount          = 0
+            TotalVersions      = 0
+            TotalVersionBytes  = 0
             TotalVersionSizeMB = 0
             TotalVersionSizeHR = "ERROR"
         })
@@ -189,9 +210,9 @@ foreach ($site in $allSites) {
 # ---------------------------------------------------------------------------
 # Export results
 # ---------------------------------------------------------------------------
-$timestamp   = Get-Date -Format "yyyyMMdd_HHmmss"
-$detailCsv   = Join-Path $OutputPath "SPO_VersionDetail_$timestamp.csv"
-$summaryCsv  = Join-Path $OutputPath "SPO_VersionSummary_$timestamp.csv"
+$timestamp  = Get-Date -Format "yyyyMMdd_HHmmss"
+$detailCsv  = Join-Path $OutputPath "SPO_VersionDetail_$timestamp.csv"
+$summaryCsv = Join-Path $OutputPath "SPO_VersionSummary_$timestamp.csv"
 
 $report      | Export-Csv -Path $detailCsv  -NoTypeInformation -Encoding UTF8
 $siteSummary | Export-Csv -Path $summaryCsv -NoTypeInformation -Encoding UTF8

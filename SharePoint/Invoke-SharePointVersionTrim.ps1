@@ -3,12 +3,23 @@
 # Description : Trims file version history across all SharePoint Online sites.
 #               Supports two strategies:
 #                 -KeepVersions  N  – keep the N most-recent versions per file
-#                 -DeleteOlderThan  – delete versions older than X days
+#                 -DeleteOlderThanDays X – delete versions older than X days
 #               Run with -WhatIf first to preview changes before deleting.
-# Requirements: PnP.PowerShell module
+# Requirements: PnP.PowerShell module  (v2+)
 #               Install-Module PnP.PowerShell -Force
-# Usage       :
-#   # Preview (no changes made)
+#
+# Authentication (choose one):
+#   Option A – PnP Management Shell app (no app registration needed, one-time
+#              admin consent required):
+#               Register-PnPManagementShellAccess   # run once as Global Admin
+#              Then run this script without -ClientId (uses the default below).
+#
+#   Option B – Your own Entra ID App Registration:
+#               Pass -ClientId "<your-app-client-id>"
+#               The app needs Sites.FullControl.All (application) + admin consent.
+#
+# Usage:
+#   # Preview – no changes made
 #   .\Invoke-SharePointVersionTrim.ps1 -TenantName "contoso" -KeepVersions 10 -WhatIf
 #
 #   # Keep only 10 versions per file across all sites
@@ -28,6 +39,11 @@ param (
 
     [Parameter(Mandatory = $false)]
     [string]$AdminUrl,
+
+    # PnP Management Shell multi-tenant app (public, no custom app needed).
+    # Override with your own app registration Client ID if preferred.
+    [Parameter(Mandatory = $false)]
+    [string]$ClientId = "31359c7f-bd7e-475c-86db-fdb8c937548e",
 
     # ---- Trim strategy -------------------------------------------------------
 
@@ -91,17 +107,22 @@ function Write-Status {
     if (-not $Quiet) { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $Message" -ForegroundColor $Color }
 }
 
+function Connect-SPOSite {
+    param ([string]$Url)
+    Connect-PnPOnline -Url $Url -ClientId $ClientId -Interactive
+}
+
 # ---------------------------------------------------------------------------
-# Validate that at least one trim strategy is meaningful
+# Validate strategy
 # ---------------------------------------------------------------------------
 if ($PSCmdlet.ParameterSetName -eq "KeepN" -and $KeepVersions -lt 1) {
-    throw "-KeepVersions must be >= 1 so that the current version is always preserved."
+    throw "-KeepVersions must be >= 1 so the current version is always preserved."
 }
 
 $cutoffDate = $null
 if ($PSCmdlet.ParameterSetName -eq "OlderThan") {
     $cutoffDate = (Get-Date).AddDays(-$DeleteOlderThanDays)
-    Write-Status "Trim strategy: delete versions older than $cutoffDate (keeping >= $MinVersionsToKeep recent versions)" "Cyan"
+    Write-Status "Trim strategy: delete versions older than $cutoffDate (keeping >= $MinVersionsToKeep recent)" "Cyan"
 } else {
     Write-Status "Trim strategy: keep $KeepVersions most-recent versions per file" "Cyan"
 }
@@ -116,7 +137,9 @@ if ($WhatIfPreference) {
 if (-not $AdminUrl) { $AdminUrl = "https://$TenantName-admin.sharepoint.com" }
 
 Write-Status "Connecting to SharePoint Admin: $AdminUrl" "Cyan"
-Connect-PnPOnline -Url $AdminUrl -Interactive
+Write-Host "  ClientId: $ClientId" -ForegroundColor DarkGray
+Write-Host "  (If this is your first run, a browser window will open for sign-in.)`n" -ForegroundColor DarkGray
+Connect-SPOSite -Url $AdminUrl
 
 # ---------------------------------------------------------------------------
 # Retrieve sites
@@ -142,11 +165,11 @@ Write-Status "Sites to process: $($allSites.Count)" "Green"
 # Counters and log accumulator
 # ---------------------------------------------------------------------------
 $grandStats = [PSCustomObject]@{
-    SitesProcessed   = 0
-    FilesProcessed   = 0
-    VersionsDeleted  = 0
-    BytesReclaimed   = [long]0
-    Errors           = 0
+    SitesProcessed  = 0
+    FilesProcessed  = 0
+    VersionsDeleted = 0
+    BytesReclaimed  = [long]0
+    Errors          = 0
 }
 
 $trimLog = [System.Collections.Generic.List[PSObject]]::new()
@@ -161,7 +184,7 @@ foreach ($site in $allSites) {
     Write-Status "`n[$siteIndex/$($allSites.Count)] Site: $siteUrl" "Yellow"
 
     try {
-        Connect-PnPOnline -Url $siteUrl -Interactive
+        Connect-SPOSite -Url $siteUrl
 
         $lists = Get-PnPList | Where-Object {
             $_.BaseTemplate -eq 101 -and
@@ -169,7 +192,6 @@ foreach ($site in $allSites) {
         }
 
         foreach ($list in $lists) {
-            # Skip libraries with versioning disabled
             $listDetail = Get-PnPList -Identity $list.Id -Includes EnableVersioning
             if (-not $listDetail.EnableVersioning) {
                 Write-Status "  [SKIP] '$($list.Title)' – versioning disabled" "DarkGray"
@@ -189,27 +211,17 @@ foreach ($site in $allSites) {
                     $versions = Get-PnPProperty -ClientObject $file -Property Versions
                     if ($versions.Count -eq 0) { continue }
 
-                    # Versions are returned newest-first; build an ordered list
                     $orderedVersions = @($versions | Sort-Object -Property Created -Descending)
 
-                    # ---- Determine which versions to delete ----------------
                     $toDelete = @()
-
                     if ($PSCmdlet.ParameterSetName -eq "KeepN") {
-                        # Delete everything beyond the Nth most-recent version
                         if ($orderedVersions.Count -ge $KeepVersions) {
                             $toDelete = $orderedVersions | Select-Object -Skip $KeepVersions
                         }
                     } else {
-                        # OlderThan strategy
                         $candidatesByDate = $orderedVersions | Where-Object { $_.Created -lt $cutoffDate }
-                        # Always preserve at least $MinVersionsToKeep of the newest
                         $safeKeepCount    = [math]::Max($MinVersionsToKeep, 0)
-                        if ($orderedVersions.Count -le $safeKeepCount) {
-                            # Already at or below the minimum – keep all
-                            $toDelete = @()
-                        } else {
-                            # Only delete candidates that don't overlap with the keep window
+                        if ($orderedVersions.Count -gt $safeKeepCount) {
                             $toDelete = $candidatesByDate | Where-Object {
                                 $_ -notin ($orderedVersions | Select-Object -First $safeKeepCount)
                             }
@@ -218,35 +230,35 @@ foreach ($site in $allSites) {
 
                     if ($toDelete.Count -eq 0) { continue }
 
-                    # ---- Calculate bytes that will be reclaimed -------------
                     $reclaimBytes = [long]($toDelete | Measure-Object -Property Size -Sum).Sum
 
                     $grandStats.FilesProcessed++
-                    $grandStats.VersionsDeleted  += $toDelete.Count
-                    $grandStats.BytesReclaimed   += $reclaimBytes
+                    $grandStats.VersionsDeleted += $toDelete.Count
+                    $grandStats.BytesReclaimed  += $reclaimBytes
 
-                    $logRow = [PSCustomObject]@{
-                        SiteUrl          = $siteUrl
-                        Library          = $list.Title
-                        FilePath         = $file.ServerRelativeUrl
-                        FileName         = $file.Name
-                        TotalVersions    = $orderedVersions.Count
-                        VersionsDeleted  = $toDelete.Count
-                        BytesReclaimed   = $reclaimBytes
-                        SizeReclaimedHR  = Format-Bytes $reclaimBytes
-                        WhatIf           = $WhatIfPreference.ToString()
-                        Timestamp        = (Get-Date).ToString("o")
-                    }
-                    $trimLog.Add($logRow)
+                    $trimLog.Add([PSCustomObject]@{
+                        SiteUrl         = $siteUrl
+                        Library         = $list.Title
+                        FilePath        = $file.ServerRelativeUrl
+                        FileName        = $file.Name
+                        TotalVersions   = $orderedVersions.Count
+                        VersionsDeleted = $toDelete.Count
+                        BytesReclaimed  = $reclaimBytes
+                        SizeReclaimedHR = Format-Bytes $reclaimBytes
+                        WhatIf          = $WhatIfPreference.ToString()
+                        Timestamp       = (Get-Date).ToString("o")
+                    })
 
                     if (-not $Quiet) {
                         Write-Host ("    {0} – delete {1} version(s) ({2})" -f
-                            $file.Name, $toDelete.Count, (Format-Bytes $reclaimBytes)) -ForegroundColor $(if ($WhatIfPreference) {"Magenta"} else {"Red"})
+                            $file.Name, $toDelete.Count, (Format-Bytes $reclaimBytes)) `
+                            -ForegroundColor $(if ($WhatIfPreference) { "Magenta" } else { "Red" })
                     }
 
-                    # ---- Delete (skipped automatically when -WhatIf is set) --
                     foreach ($ver in $toDelete) {
-                        if ($PSCmdlet.ShouldProcess("$siteUrl – $($file.ServerRelativeUrl) v$($ver.VersionLabel)", "Delete version")) {
+                        if ($PSCmdlet.ShouldProcess(
+                            "$siteUrl – $($file.ServerRelativeUrl) v$($ver.VersionLabel)",
+                            "Delete version")) {
                             $ver.DeleteObject()
                         }
                     }
@@ -273,8 +285,8 @@ foreach ($site in $allSites) {
 # ---------------------------------------------------------------------------
 # Export log
 # ---------------------------------------------------------------------------
-$timestamp  = Get-Date -Format "yyyyMMdd_HHmmss"
-$logCsv     = Join-Path $OutputPath "SPO_VersionTrimLog_$timestamp.csv"
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$logCsv    = Join-Path $OutputPath "SPO_VersionTrimLog_$timestamp.csv"
 $trimLog | Export-Csv -Path $logCsv -NoTypeInformation -Encoding UTF8
 
 # ---------------------------------------------------------------------------
