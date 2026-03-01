@@ -5,19 +5,13 @@
 # Requirements: PnP.PowerShell module  (v2+)
 #               Install-Module PnP.PowerShell -Force
 #
-# Authentication (choose one):
-#   Option A – PnP Management Shell app (no app registration needed, one-time
-#              admin consent required):
-#               Register-PnPManagementShellAccess   # run once as Global Admin
-#              Then run this script without -ClientId (uses the default below).
-#
-#   Option B – Your own Entra ID App Registration:
-#               Pass -ClientId "<your-app-client-id>"
-#               The app needs Sites.FullControl.All (application) + admin consent,
-#               or Sites.Read.All delegated + SharePoint admin rights for the user.
+# Authentication – one-time setup (run as Global Administrator):
+#   .\Register-SPOVersionManagerApp.ps1 -TenantName "contoso"
+#   This creates an Entra ID App Registration and prints the Client ID.
+#   Pass that Client ID to this script via -ClientId on every run.
 #
 # Usage:
-#   .\Get-SharePointVersionReport.ps1 -TenantName "contoso"
+#   .\Get-SharePointVersionReport.ps1 -TenantName "contoso" -ClientId "<guid>"
 #   .\Get-SharePointVersionReport.ps1 -TenantName "contoso" -ClientId "<guid>" -OutputPath "C:\Reports"
 # =============================================================================
 
@@ -29,10 +23,9 @@ param (
     [Parameter(Mandatory = $false)]
     [string]$AdminUrl,
 
-    # PnP Management Shell multi-tenant app (public, no custom app needed).
-    # Override with your own app registration Client ID if preferred.
-    [Parameter(Mandatory = $false)]
-    [string]$ClientId = "31359c7f-bd7e-475c-86db-fdb8c937548e",
+    # Client ID from Register-SPOVersionManagerApp.ps1 (one-time setup)
+    [Parameter(Mandatory = $true)]
+    [string]$ClientId,
 
     [Parameter(Mandatory = $false)]
     [string]$OutputPath = ".",
@@ -84,8 +77,8 @@ if (-not $AdminUrl) {
 }
 
 Write-Host "`n[$(Get-Date -Format 'HH:mm:ss')] Connecting to SharePoint Admin: $AdminUrl" -ForegroundColor Cyan
-Write-Host "  ClientId: $ClientId" -ForegroundColor DarkGray
-Write-Host "  (If this is your first run, a browser window will open for sign-in.)`n" -ForegroundColor DarkGray
+Write-Host "  ClientId : $ClientId" -ForegroundColor DarkGray
+Write-Host "  A browser window will open – sign in with your SharePoint Admin account.`n" -ForegroundColor DarkGray
 Connect-SPOSite -Url $AdminUrl
 
 # ---------------------------------------------------------------------------
