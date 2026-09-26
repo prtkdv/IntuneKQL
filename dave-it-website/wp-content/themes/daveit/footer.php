@@ -61,6 +61,12 @@
             </div>
         </div>
 
+        <div class="footer-acknowledgement" style="border-top:1px solid var(--border);padding-top:24px;margin-top:24px;">
+            <p style="font-size:0.85rem;color:var(--text-muted);line-height:1.7;max-width:760px;">
+                Dave Infotech acknowledges the Traditional Custodians of the lands on which we live and work, and pays respect to Elders past and present.
+            </p>
+        </div>
+
         <div class="footer-bottom">
             <p>&copy; <?php echo date( 'Y' ); ?> Dave IT. All rights reserved.</p>
             <div class="footer-legal">
